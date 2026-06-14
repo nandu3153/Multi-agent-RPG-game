@@ -1,0 +1,731 @@
+## INSTRUCTIONS FOR CURSOR
+
+You are being asked to build a **complete, production-ready multi-agent fantasy role-playing game system** from scratch. Read this entire prompt before writing a single line of code. Follow every section carefully. After completing the build, generate full documentation as described at the end.
+
+---
+
+## PROJECT OVERVIEW
+
+Build a **turn-based, multi-agent fantasy RPG** where:
+
+- A **human player** types actions and decisions in natural language.
+- A **Game Master (GM) Agent** acts as the sole orchestrator: it interprets player input, coordinates character agents, applies game rules, rolls dice, updates world state, and narrates scenes.
+- Five **character agents** (Warrior, Mage, Rogue, Healer, Rival) each respond in-character, have persistent stats and backstories, and interact with each other and the world.
+- All world lore is grounded in a **local ChromaDB knowledge base** queried by the GM at runtime.
+- The game runs as a **web application** with a clean dark-fantasy chat-style UI.
+
+The AI backbone is **Azure AI Foundry** using the **Azure AI Inference SDK** pointed at your project endpoint. All LLM calls go through:
+
+- **Project endpoint:** `https://nandu-3153-resource.services.ai.azure.com/api/projects/<your-project>/`
+- **Azure OpenAI endpoint:** `https://nandu-3153-resource.openai.azure.com/openai/v1`
+- **Model:** `gpt-4o` (deployed in your Azure AI Foundry project)
+- **Auth:** `AZURE_AI_FOUNDRY_API_KEY` (your Foundry project API key)
+
+> **Important:** Use the `azure-ai-inference` Python SDK (not `openai` directly). The SDK targets the Azure AI Foundry project endpoint and supports the same chat completion interface.
+
+---
+
+## TECH STACK
+
+| Layer | Choice |
+|---|---|
+| Language | Python 3.11+ |
+| Backend framework | FastAPI |
+| Frontend | React (Vite + TypeScript) |
+| AI SDK | `azure-ai-inference` (Azure AI Foundry project endpoint) |
+| AI Model | `gpt-4o` via Azure AI Foundry deployment |
+| Vector / lore search | ChromaDB (local, embedded) + `sentence-transformers` |
+| State persistence | JSON files on disk (no external DB required) |
+| Dice engine | Python `random` module (pure) |
+| Package manager | pip + `requirements.txt` |
+
+---
+
+## DIRECTORY STRUCTURE
+
+Create the following layout exactly. Do not deviate.
+
+```
+rpg-multiagent/
+├── backend/
+│   ├── main.py                    # FastAPI entry point
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── base_agent.py          # Shared Azure AI Inference client wrapper
+│   │   ├── game_master.py         # GM orchestrator
+│   │   ├── warrior.py
+│   │   ├── mage.py
+│   │   ├── rogue.py
+│   │   ├── healer.py
+│   │   └── rival.py
+│   ├── engine/
+│   │   ├── __init__.py
+│   │   ├── dice.py                # Roll engine
+│   │   ├── rules.py               # Lightweight RPG rules
+│   │   ├── state_manager.py       # Load/save campaign state
+│   │   └── lore_retriever.py      # ChromaDB query wrapper
+│   ├── data/
+│   │   ├── lore/                  # Markdown world-knowledge files
+│   │   │   ├── world_overview.md
+│   │   │   ├── locations.md
+│   │   │   ├── factions.md
+│   │   │   ├── characters.md
+│   │   │   ├── quests.md
+│   │   │   ├── items_and_artifacts.md
+│   │   │   ├── bestiary.md
+│   │   │   ├── homebrew_rules.md
+│   │   │   └── session_notes.md
+│   │   └── state/
+│   │       └── campaign_state.json
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   └── logger.py
+│   └── requirements.txt
+├── frontend/
+│   ├── index.html
+│   ├── vite.config.ts
+│   ├── tsconfig.json
+│   ├── package.json
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx
+│       ├── components/
+│       │   ├── ChatWindow.tsx
+│       │   ├── MessageBubble.tsx
+│       │   ├── PartyPanel.tsx
+│       │   ├── QuestJournal.tsx
+│       │   ├── DiceRollDisplay.tsx
+│       │   └── AgentFlowTrace.tsx
+│       ├── hooks/
+│       │   └── useGameSession.ts
+│       └── types/
+│           └── index.ts
+├── .env.example
+├── .gitignore
+└── README.md                      # Generated after build (see final section)
+```
+
+---
+
+## PART 0 — AZURE AI FOUNDRY CLIENT SETUP (`agents/base_agent.py`)
+
+This is the shared AI client used by every agent. Implement it as follows:
+
+```python
+import os
+from azure.ai.inference import ChatCompletionsClient
+from azure.core.credentials import AzureKeyCredential
+
+def get_azure_client() -> ChatCompletionsClient:
+    endpoint = os.environ["AZURE_AI_FOUNDRY_ENDPOINT"]   # project endpoint
+    api_key  = os.environ["AZURE_AI_FOUNDRY_API_KEY"]
+    return ChatCompletionsClient(
+        endpoint=endpoint,
+        credential=AzureKeyCredential(api_key)
+    )
+
+AZURE_MODEL = os.environ.get("AZURE_AI_MODEL", "gpt-4o")
+```
+
+Every agent calls `get_azure_client()` and uses `client.complete(messages=[...], model=AZURE_MODEL)`.
+
+The chat completion call pattern:
+
+```python
+from azure.ai.inference.models import SystemMessage, UserMessage, AssistantMessage
+
+response = client.complete(
+    model=AZURE_MODEL,
+    messages=[
+        SystemMessage(content=self.system_prompt),
+        *conversation_history,
+        UserMessage(content=user_prompt)
+    ],
+    max_tokens=1024,
+    temperature=0.8
+)
+return response.choices[0].message.content
+```
+
+> Do NOT use `openai` Python package directly. Do NOT use `AzureOpenAI`. Use only `azure-ai-inference`.
+
+---
+
+## PART 1 — LORE DATA FILES
+
+### Instructions
+Populate all nine Markdown files under `backend/data/lore/` with **original, synthetic fantasy content**. Do not copy any published or copyrighted setting. The world is called **"The Shattered Moon of Eldervale."**
+
+Each file must follow this structure per entry:
+
+```markdown
+# [Entry Name]
+**Type:** [category]
+**Tags:** [comma-separated keywords for vector search]
+**Region / Affiliation:** [where/who]
+
+## Summary
+[2–4 sentence overview]
+
+## Known Facts (Player-Visible)
+- Bullet list of things players can discover
+
+## Secrets (GM Only)
+- Bullet list of hidden truths the GM uses but does not reveal prematurely
+
+## Related Entities
+- [Link to other entries by name]
+```
+
+### Required entries per file
+
+- `world_overview.md` — 1 world summary (kingdoms, geography, shattered moon mythology, laws of magic, calendar)
+- `locations.md` — 6 locations: The Moonlit Gate, The Silver Root Sanctum, The Ashen Market, The Starwell Cavern, The Verdant Hollow, The Ironwarden Fortress
+- `factions.md` — 3 factions: Order of the Silver Root (healers), The Ashveil Compact (merchants/spies), The Ironwarden Legion (militarist)
+- `characters.md` — 6 profiles: Bran Ironvale (Warrior), Lyra Vey (Mage), Sable Dusk (Rogue), Aldric Thorn (Healer), Kael Thorn (Rival), plus 1 NPC merchant
+- `quests.md` — 3 quests: main quest "Recover the Starwell Relic" + 2 side quests
+- `items_and_artifacts.md` — 6 items including the Starwell Relic, the Eye Sigil Amulet, and 4 others
+- `bestiary.md` — 5 monsters with stats (HP, attack bonus, weaknesses, loot, difficulty rating)
+- `homebrew_rules.md` — Full lightweight rules document (see rules spec below)
+- `session_notes.md` — Empty template the GM writes to during play
+
+---
+
+## PART 2 — LIGHTWEIGHT GAME RULES (`engine/rules.py` + `homebrew_rules.md`)
+
+Implement **all** of the following mechanics. Rules must be encoded both in `homebrew_rules.md` (for lore retrieval) and as Python logic in `rules.py`.
+
+### Ability Scores
+Each character has six scores (1–20): STR, DEX, INT, WIS, CON, CHA. Modifier = `floor((score - 10) / 2)`.
+
+### Checks
+```python
+def ability_check(score: int, difficulty: int) -> dict:
+    roll = dice.d20()
+    modifier = (score - 10) // 2
+    total = roll + modifier
+    if total >= difficulty + 5:
+        result = "critical_success"
+    elif total >= difficulty:
+        result = "success"
+    elif total >= difficulty - 4:
+        result = "partial_success"
+    else:
+        result = "failure"
+    return {"roll": roll, "modifier": modifier, "total": total, "difficulty": difficulty, "result": result}
+```
+
+### Combat
+- Initiative: each combatant rolls `d20 + DEX modifier`, sorted descending.
+- Attack: roll `d20 + STR or DEX modifier` vs. target's Armor Class (AC).
+- Damage: weapon-specific dice (e.g., longsword = `d8 + STR modifier`).
+- HP tracked per character; at 0 HP character is incapacitated.
+- Combat ends when all enemies defeated or all party members incapacitated.
+
+### Inventory
+- Maximum 8 item slots per character.
+- Items have weight class: Light (1 slot), Medium (2 slots), Heavy (3 slots).
+- Enforce slot constraints when adding items.
+
+### Rests
+- Short rest: recover `d6 + CON modifier` HP. Usable once between long rests.
+- Long rest: fully restore HP and reset short rest counter. Requires a safe location.
+
+### Skill List
+Stealth→DEX, Arcana→INT, Medicine→WIS, Persuasion→CHA, Athletics→STR, Perception→WIS, Deception→CHA, History→INT, Insight→WIS, Intimidation→CHA.
+
+### Structured Roll Result Format
+Every roll must return this exact JSON-serialisable dict:
+```json
+{
+  "actor": "Rogue Agent",
+  "check": "Stealth",
+  "roll": 17,
+  "modifier": 3,
+  "total": 20,
+  "difficulty": 14,
+  "result": "success",
+  "consequence": "Sable Dusk slips past the torchlight unseen."
+}
+```
+
+---
+
+## PART 3 — DICE ENGINE (`engine/dice.py`)
+
+```python
+def d4() -> int: ...
+def d6() -> int: ...
+def d8() -> int: ...
+def d10() -> int: ...
+def d12() -> int: ...
+def d20() -> int: ...
+def d100() -> int: ...
+def roll(sides: int, count: int = 1, modifier: int = 0) -> dict:
+    # Returns {"dice": [int, ...], "modifier": modifier, "total": int}
+```
+
+---
+
+## PART 4 — LORE RETRIEVER (`engine/lore_retriever.py`)
+
+Use **ChromaDB** as the local vector store with `sentence-transformers` (`all-MiniLM-L6-v2`) for embeddings. Do **not** use Azure OpenAI embeddings for this — keep it local and free.
+
+### Indexing
+On first startup (or `--reindex` flag), parse all `.md` files in `backend/data/lore/`, split at `##` headings into chunks, embed with `all-MiniLM-L6-v2`, and upsert into ChromaDB collection `"eldervale_lore"`.
+
+### Query interface
+```python
+def query_lore(query: str, n_results: int = 4) -> list[dict]:
+    # Returns list of {id, document, metadata, distance}
+```
+
+The GM calls this before narrating any scene involving a named location, faction, item, character, or monster.
+
+---
+
+## PART 5 — STATE MANAGER (`engine/state_manager.py`)
+
+```json
+{
+  "campaign": "The Shattered Moon of Eldervale",
+  "session_id": "uuid",
+  "location": "string",
+  "active_quest": "string",
+  "turn_number": 0,
+  "party": [
+    {
+      "agent": "warrior",
+      "name": "Bran Ironvale",
+      "hp_current": 26,
+      "hp_max": 26,
+      "ac": 17,
+      "scores": {"STR": 18, "DEX": 12, "INT": 8, "WIS": 10, "CON": 16, "CHA": 10},
+      "inventory": ["longsword", "shield", "torch"],
+      "conditions": [],
+      "short_rest_used": false
+    }
+  ],
+  "world_flags": {},
+  "quest_log": [],
+  "conversation_history": [],
+  "rival_trust_level": "uncertain",
+  "faction_reputation": {
+    "Order of the Silver Root": 0,
+    "Ashveil Compact": 0,
+    "Ironwarden Legion": 0
+  }
+}
+```
+
+Implement:
+```python
+def load_state(path: str) -> dict: ...
+def save_state(state: dict, path: str) -> None: ...
+def new_campaign() -> dict: ...
+```
+
+---
+
+## PART 6 — CHARACTER AGENTS
+
+Each agent file implements a class with this interface:
+
+```python
+class [Name]Agent:
+    def __init__(self, state: dict):
+        self.state = state
+        self.system_prompt = "..."   # full in-character system prompt
+        self.client = get_azure_client()
+
+    def respond(
+        self,
+        scene_context: str,
+        player_action: str,
+        gm_instruction: str,
+        conversation_history: list[dict]
+    ) -> str:
+        # Calls Azure AI Inference with self.system_prompt
+        # Returns the character's in-character response string
+```
+
+### System prompt requirements per agent
+
+**Warrior (Bran Ironvale)**
+- Backstory: veteran soldier seeking a stolen family shield; brother died in the Ironwarden siege
+- Personality: brave, blunt, protective, suspicious of magic, fiercely loyal
+- Tactical role: propose combat strategies, guard the party, call out danger
+- Voice: short sentences, soldier's cadence, dark humor
+
+**Mage (Lyra Vey)**
+- Backstory: disgraced academy scholar; believes the Starwell is real and will restore her reputation
+- Personality: analytical, arrogant, fascinated by magical anomalies, impatient with Bran
+- Tactical role: interpret runes/artifacts, suggest spells, advise caution around magical destruction
+- Voice: precise vocabulary, rhetorical questions, frequent lore cross-references
+
+**Rogue (Sable Dusk)**
+- Backstory: former thieves' guild courier with a bounty on her head; knows too many secrets
+- Personality: witty, skeptical, opportunistic, secretly protective
+- Tactical role: scout ahead, detect traps, find alternate routes, gather rumors
+- Voice: sarcastic, streetwise slang, never volunteers information freely
+
+**Healer (Aldric Thorn)**
+- Backstory: monk of the Order of the Silver Root; believes the shattered moon is a spiritual wound
+- Personality: compassionate, deliberate, principled, morally challenging
+- Tactical role: track HP/conditions, push non-violent options, invoke religious lore
+- Voice: measured, parabolic, quotes old scripture-like texts
+
+**Rival (Kael Thorn)**
+- Backstory: Aldric's estranged sibling; seeks the Starwell Relic to sell it
+- Personality: charismatic, proud, knows more than they reveal, oscillates between helpful and threatening
+- Tactical role: create dramatic tension, appear at turning points, offer deals with strings attached
+- Voice: silky, confident, implies hidden knowledge
+
+---
+
+## PART 7 — GAME MASTER AGENT (`agents/game_master.py`)
+
+The GM orchestrates the full adventure loop:
+
+1. Receive player input + current state
+2. Classify action type: `exploration`, `combat`, `social`, `investigation`, `rest`, `inventory`
+3. Query lore retriever for relevant context
+4. Determine which character agents to activate (0–5 per turn)
+5. Call each activated agent's `.respond()` and collect responses
+6. Determine whether a dice roll is needed; execute via `engine/rules.py`
+7. Compose unified narrative scene using all inputs
+8. Update campaign state (HP, inventory, flags, quest progress, faction rep)
+9. Return structured JSON response
+
+### GM System Prompt (embed verbatim)
+
+```
+You are the Game Master of "The Shattered Moon of Eldervale," a dark fantasy adventure.
+You are simultaneously the narrator, world builder, and rules arbiter.
+
+Your responsibilities:
+- Narrate scenes in vivid second-person prose ("You see...", "The air smells of...")
+- Coordinate character agents: quote their responses naturally within the narrative
+- Apply game rules fairly and consistently
+- Maintain internal consistency with lore retrieved from the knowledge base
+- Track consequences: every player choice must have a meaningful effect
+- Never railroad the player; always offer at least 2–3 possible directions after each scene
+- For irreversible actions (opening the Moonlit Gate, killing a named NPC, using a cursed artifact),
+  pause and ask for confirmation: "This cannot be undone. Do you wish to proceed?"
+- Maintain tone: dark, mysterious, occasionally hopeful, never goofy
+
+You receive: player_action, lore_context, character_responses, roll_results, current_state.
+You output: a single cohesive scene in Markdown, ending with 2–3 numbered choices or an open prompt.
+```
+
+### GM Output Format (strict JSON)
+
+```json
+{
+  "scene": "Markdown narrative text...",
+  "choices": ["1. ...", "2. ...", "3. ..."],
+  "rolls": [{ "actor": "...", "check": "...", "roll": 0, "modifier": 0, "total": 0, "difficulty": 0, "result": "...", "consequence": "..." }],
+  "state_updates": {
+    "location": "optional new location",
+    "world_flags": {},
+    "party_hp_changes": {},
+    "inventory_changes": {},
+    "quest_updates": []
+  },
+  "agents_activated": ["warrior", "mage"],
+  "lore_chunks_used": ["chunk_id_1"],
+  "requires_confirmation": false,
+  "confirmation_prompt": null
+}
+```
+
+---
+
+## PART 8 — FASTAPI BACKEND (`backend/main.py`)
+
+### `POST /api/new-game`
+Creates a new campaign. Returns opening scene and initial state.
+- Request: `{ "player_name": "string", "character_class": "warrior|mage|rogue|healer" }`
+- Response: `{ "session_id": "...", "scene": "...", "state": {...} }`
+
+### `POST /api/action`
+Core game loop. Processes a player action.
+- Request: `{ "session_id": "string", "action": "string" }`
+- Response: full GM output JSON
+
+### `POST /api/confirm`
+Used when `requires_confirmation` is true.
+- Request: `{ "session_id": "string", "confirmed": true }`
+
+### `GET /api/state/{session_id}`
+Returns full current campaign state.
+
+### `GET /api/lore/search?q={query}`
+Queries lore retriever directly. Returns raw chunks. For debugging.
+
+### `POST /api/rest`
+Triggers a rest.
+- Request: `{ "session_id": "string", "rest_type": "short|long" }`
+
+---
+
+## PART 9 — REACT FRONTEND
+
+Build a polished dark-fantasy-themed UI with **Tailwind CSS** (dark theme). Use serif font for narrative prose and monospace for dice results.
+
+**`ChatWindow.tsx`** — Scrollable scene history. Player actions right-aligned, GM scenes left-aligned with Markdown rendering (`react-markdown`). Pinned input bar at bottom.
+
+**`MessageBubble.tsx`** — Two variants: `player` (dark purple, right) and `gm` (dark slate, left).
+
+**`PartyPanel.tsx`** — Sidebar with HP bars (green → yellow at 50% → red at 25%), conditions, inventory. Clicking a character opens a stat block modal.
+
+**`QuestJournal.tsx`** — Collapsible panel: active quests, completed quests, discovered lore clues.
+
+**`DiceRollDisplay.tsx`** — Animated CSS card showing actor, check, roll, modifier, total, difficulty, result badge. Auto-fades after 4 seconds.
+
+**`AgentFlowTrace.tsx`** — Collapsible debug panel (off by default). Lists activated agents, lore chunks used, raw state diff per turn.
+
+Use React `useState` + `useReducer`. No Redux. Session ID in `localStorage`.
+
+---
+
+## PART 10 — ENVIRONMENT VARIABLES
+
+Create `.env.example`:
+
+```env
+# ─── Azure AI Foundry (Required) ──────────────────────────────────────────────
+AZURE_AI_FOUNDRY_API_KEY=your_azure_ai_foundry_api_key_here
+AZURE_AI_FOUNDRY_ENDPOINT=https://nandu-3153-resource.services.ai.azure.com/api/projects/<your-project-name>/
+AZURE_OPENAI_ENDPOINT=https://nandu-3153-resource.openai.azure.com/openai/v1
+AZURE_AI_MODEL=gpt-4o
+
+# ─── App Config (Optional) ────────────────────────────────────────────────────
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
+CHROMA_PERSIST_DIR=./backend/data/chroma
+STATE_DIR=./backend/data/state
+LORE_DIR=./backend/data/lore
+LOG_LEVEL=INFO
+```
+
+> The user must copy `.env.example` to `.env` and fill in `AZURE_AI_FOUNDRY_API_KEY` and the correct project name in the endpoint URL. The API key is the one shown on the Azure AI Foundry dashboard under "API key".
+
+---
+
+## PART 11 — `requirements.txt`
+
+```
+azure-ai-inference>=1.0.0b9
+azure-core>=1.30.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+python-dotenv>=1.0.0
+pydantic>=2.7.0
+aiofiles>=23.2.0
+```
+
+> Do NOT include `openai`, `anthropic`, or `azure-openai` packages. The sole AI dependency is `azure-ai-inference`.
+
+---
+
+## PART 12 — STARTUP CHECKS (`backend/main.py` lifespan event)
+
+On startup:
+1. Verify `AZURE_AI_FOUNDRY_API_KEY` is set — raise `RuntimeError` with clear message if missing
+2. Verify `AZURE_AI_FOUNDRY_ENDPOINT` is set — raise `RuntimeError` if missing
+3. Test Azure connectivity: send a minimal `client.complete()` call with `max_tokens=5`; if it fails, log the error and the likely cause (wrong key, wrong endpoint, model not deployed)
+4. Check if ChromaDB collection exists; if not, run full lore indexing automatically
+5. Create `backend/data/state/` if it doesn't exist
+6. Log startup summary: model name, endpoint (masked), lore chunks indexed, available endpoints
+
+---
+
+## PART 13 — ERROR HANDLING
+
+- All Azure AI Inference calls must be wrapped in try/except with exponential backoff: wait 1s, 2s, 4s (max 3 retries)
+- On `HttpResponseError` 401: log "Invalid API key — check AZURE_AI_FOUNDRY_API_KEY"
+- On `HttpResponseError` 404: log "Model not found — check AZURE_AI_MODEL and your deployment name in Azure AI Foundry"
+- On `HttpResponseError` 429: log "Rate limit hit — backing off" and apply longer retry delay
+- If lore retrieval fails, GM falls back to its own knowledge with a warning log
+- If state file is corrupted, offer to reset to new campaign
+- All API errors return: `{ "error": "...", "code": "...", "recoverable": true|false }`
+
+---
+
+## PART 14 — COMPLETE DOCUMENTATION (GENERATE AFTER BUILD)
+
+After the full project is built, generate `README.md` at the project root. Every section below is mandatory.
+
+```markdown
+# The Shattered Moon of Eldervale — Multi-Agent Fantasy RPG
+
+## Overview
+[2-paragraph description of what this project is, what makes it interesting, and that it runs on Azure AI Foundry]
+
+## Architecture Diagram
+[Mermaid or ASCII: Player → GM Agent → [Warrior, Mage, Rogue, Healer, Rival] → GM Agent → Lore Retriever (ChromaDB) + State Manager (JSON) → Azure AI Foundry (gpt-4o)]
+
+## Multi-Agent Design
+[Table: Agent | Role | Personality | Modules accessed | Azure model used]
+
+## Prerequisites
+- Python 3.11+
+- Node.js 18+
+- npm 9+
+- An Azure AI Foundry project with gpt-4o deployed
+
+## Azure AI Foundry Setup
+[Step-by-step:
+  1. Go to https://ai.azure.com
+  2. Open your project (nandu-3153-resource)
+  3. Copy the Project endpoint URL
+  4. Copy the API key from the dashboard
+  5. Verify gpt-4o is deployed under "Models + endpoints"
+  6. Paste both into your .env file]
+
+## API Keys and Credentials Required
+[Table: Variable | Where to find it | Required?]
+- AZURE_AI_FOUNDRY_API_KEY | Azure AI Foundry dashboard → API key | Required
+- AZURE_AI_FOUNDRY_ENDPOINT | Azure AI Foundry dashboard → Project endpoint | Required
+- AZURE_AI_MODEL | Your deployed model name (default: gpt-4o) | Optional
+
+## Installation
+
+### 1. Clone the repository
+\`\`\`bash
+git clone <repo-url>
+cd rpg-multiagent
+\`\`\`
+
+### 2. Backend setup
+\`\`\`bash
+cd backend
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp ../.env.example .env
+# Edit .env — add AZURE_AI_FOUNDRY_API_KEY and your project endpoint
+\`\`\`
+
+### 3. Frontend setup
+\`\`\`bash
+cd ../frontend
+npm install
+\`\`\`
+
+## Running the Project
+
+### Start the backend
+\`\`\`bash
+cd backend
+source venv/bin/activate
+uvicorn main:app --reload --port 8000
+\`\`\`
+On first run, the lore knowledge base is automatically indexed (~30 seconds).
+
+### Start the frontend
+\`\`\`bash
+cd frontend
+npm run dev
+\`\`\`
+Open http://localhost:5173
+
+## API Reference
+
+### POST /api/new-game
+[Full description, request schema, response schema, example curl]
+
+### POST /api/action
+[Full description, request schema, response schema, example curl]
+
+### POST /api/confirm
+[Full description, request schema, response schema, example curl]
+
+### GET /api/state/{session_id}
+[Full description, response schema, example curl]
+
+### GET /api/lore/search?q={query}
+[Full description, query params, response schema, example curl]
+
+### POST /api/rest
+[Full description, request schema, response schema, example curl]
+
+## Game Rules Summary
+[Ability checks, combat flow, inventory limits, rests, skill list]
+
+## Directory Structure
+[Full annotated tree]
+
+## Environment Variables
+[Full table: variable | default | description | required]
+
+## Lore Knowledge Base
+[How ChromaDB works here, how to re-index with --reindex, how to add new lore entries]
+
+## Agent System
+[How agents are called, how the GM orchestrates them, how conversation history is managed per session]
+
+## Troubleshooting
+
+### "AZURE_AI_FOUNDRY_API_KEY not set"
+Set it in your .env file. Copy the key from the Azure AI Foundry project dashboard under "API key".
+
+### "401 Unauthorized from Azure"
+Your API key is wrong or expired. Re-copy it from the dashboard.
+
+### "404 Model not found"
+Your AZURE_AI_MODEL value doesn't match a deployed model. Go to Azure AI Foundry → Models + endpoints and check the deployment name.
+
+### "ChromaDB collection not found"
+Delete ./backend/data/chroma and restart the backend — it will re-index automatically.
+
+### "Port 8000 already in use"
+\`\`\`bash
+lsof -i :8000 | grep LISTEN
+kill -9 <PID>
+\`\`\`
+
+### Frontend cannot reach backend
+Check that the Vite proxy in vite.config.ts forwards /api to http://localhost:8000.
+
+### Slow lore indexing on first run
+sentence-transformers downloads the all-MiniLM-L6-v2 model (~90MB) on first use. This is a one-time download.
+
+## Extending the Project
+[How to add a new character agent, add lore entries, add new game rules]
+
+## License
+MIT
+```
+
+---
+
+## FINAL CHECKLIST BEFORE COMPLETING
+
+- [ ] All 9 lore Markdown files populated with original synthetic content
+- [ ] `base_agent.py` uses `azure-ai-inference` SDK only — no `openai` package
+- [ ] All Azure calls use `AZURE_AI_FOUNDRY_ENDPOINT` and `AZURE_AI_FOUNDRY_API_KEY` from env
+- [ ] Startup connectivity test fires on launch and gives actionable error messages
+- [ ] ChromaDB indexing runs automatically on first startup
+- [ ] All 5 character agents return in-character responses via Azure AI Foundry
+- [ ] GM orchestrates all agents and produces structured JSON output
+- [ ] All 6 FastAPI endpoints work correctly
+- [ ] Dice rolls produce structured result dicts with all required fields
+- [ ] State saves to and loads from JSON correctly across sessions
+- [ ] React frontend renders GM scenes as Markdown, shows HP bars, shows dice rolls
+- [ ] AgentFlowTrace debug panel implemented and toggleable
+- [ ] `.env.example` contains all required Azure variables with comments
+- [ ] `requirements.txt` includes `azure-ai-inference` and excludes `openai`/`anthropic`
+- [ ] `README.md` covers the full Azure AI Foundry setup section
+- [ ] No hardcoded API keys or endpoints in the codebase
+- [ ] Retry logic handles 401, 404, 429 from Azure specifically
+
+---
+
+*Do not ask clarifying questions. Build the full project as specified. If any ambiguity exists, make a reasonable default choice, document it in `DECISIONS.md`, and keep building.*
+ENDOFFILE
+Output
+

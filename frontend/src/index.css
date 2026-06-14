@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-void-200/50;
+  }
+
+  body {
+    @apply bg-void text-moon font-ui antialiased;
+    margin: 0;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    @apply bg-mystic/40 text-moon-glow;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-void-50/70 backdrop-blur-xl border border-white/[0.06] shadow-panel;
+  }
+
+  .glass-card {
+    @apply bg-void-100/60 backdrop-blur-md border border-white/[0.05] rounded-xl shadow-card;
+  }
+
+  .btn-primary {
+    @apply relative overflow-hidden px-6 py-3 rounded-xl font-ui font-medium text-void
+      bg-gradient-to-r from-gold to-gold-bright
+      hover:from-gold-bright hover:to-gold
+      disabled:opacity-40 disabled:cursor-not-allowed
+      transition-all duration-300 shadow-glow-gold
+      hover:shadow-[0_0_40px_rgba(212,168,83,0.35)]
+      active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 rounded-lg font-ui text-sm text-moon-dim
+      border border-white/[0.08] bg-white/[0.03]
+      hover:bg-white/[0.06] hover:text-moon hover:border-white/[0.12]
+      disabled:opacity-40 disabled:cursor-not-allowed
+      transition-all duration-200;
+  }
+
+  .input-field {
+    @apply w-full bg-void/80 border border-white/[0.08] rounded-xl px-4 py-3
+      text-moon placeholder:text-moon-dim/50 font-narrative text-lg
+      focus:outline-none focus:border-mystic/50 focus:ring-2 focus:ring-mystic/20
+      transition-all duration-200;
+  }
+
+  .section-label {
+    @apply font-ui text-[10px] uppercase tracking-[0.2em] text-moon-dim/70 font-medium;
+  }
+
+  .narrative-prose {
+    @apply font-narrative text-[1.15rem] leading-[1.85] text-moon/95;
+  }
+
+  .narrative-prose p {
+    @apply mb-4 last:mb-0;
+  }
+
+  .narrative-prose strong {
+    @apply text-gold font-semibold;
+  }
+
+  .narrative-prose em {
+    @apply text-moon-glow italic;
+  }
+
+  .hp-bar-track {
+    @apply h-1.5 rounded-full bg-void overflow-hidden;
+  }
+
+  .hp-bar-fill {
+    @apply h-full rounded-full transition-all duration-700 ease-out;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
