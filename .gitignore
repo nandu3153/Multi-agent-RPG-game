@@ -17,7 +17,7 @@ build/
 backend/data/chroma/
 backend/data/state/*.json
 !backend/data/state/campaign_state.json
-backend/venv
+
 
 # Node
 frontend/node_modules/

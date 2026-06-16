@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer } from "react";
+import { apiUrl } from "../config/api";
 import type {
   CampaignState,
   GameAction,
@@ -130,7 +131,7 @@ export function useGameSession() {
   const resumeSession = useCallback(async (sessionId: string) => {
     dispatch({ type: "SET_LOADING", loading: true });
     try {
-      const res = await fetch(`/api/state/${sessionId}`);
+      const res = await fetch(apiUrl(`/api/state/${sessionId}`));
       if (!res.ok) throw new Error(await parseError(res));
       const campaignState: CampaignState = await res.json();
       const lastGm = [...campaignState.conversation_history]
@@ -158,7 +159,7 @@ export function useGameSession() {
     async (playerName: string, characterClass: string) => {
       dispatch({ type: "SET_LOADING", loading: true });
       try {
-        const res = await fetch("/api/new-game", {
+        const res = await fetch(apiUrl("/api/new-game"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ player_name: playerName, character_class: characterClass }),
@@ -186,7 +187,9 @@ export function useGameSession() {
       dispatch({ type: "PLAYER_ACTION", content: action });
       dispatch({ type: "SET_LOADING", loading: true });
       try {
-        const endpoint = state.awaitingConfirmation ? "/api/confirm" : "/api/action";
+        const endpoint = apiUrl(
+          state.awaitingConfirmation ? "/api/confirm" : "/api/action"
+        );
         const body = state.awaitingConfirmation
           ? {
               session_id: state.sessionId,
@@ -214,7 +217,7 @@ export function useGameSession() {
       if (!state.sessionId) return;
       dispatch({ type: "SET_LOADING", loading: true });
       try {
-        const res = await fetch("/api/rest", {
+        const res = await fetch(apiUrl("/api/rest"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: state.sessionId, rest_type: restType }),
