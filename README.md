@@ -8,11 +8,6 @@ You are not chatting with a single bot. Each turn, the GM classifies your action
 
 The stack is a **FastAPI** backend, a **React + Vite + TypeScript** dark-fantasy chat UI, JSON file persistence for campaign state, and **Azure AI Foundry** (`gpt-4o` via `azure-ai-inference`) for all narrative intelligence.
 
-```bash
-Want to play the game?
-Open the link above in your browser, enter your adventurer name, choose a class (Warrior, Mage, Rogue, or Healer), and begin at the Moonlit Gate.
-```
----
 
 ### What makes it different
 
@@ -169,7 +164,7 @@ The GM classifies each player action into one of: `combat`, `social`, `investiga
 
 ### Getting started
 
-1. Open **[RPG.com](https://RPG.com)** (or run locally — see [Running locally](#running-locally)).
+1. run locally.
 2. Enter your **adventurer name**.
 3. Choose a **class**: Warrior, Mage, Rogue, or Healer (this is your player character; NPC companions join automatically).
 4. Read the opening scene at **The Moonlit Gate**.
@@ -373,19 +368,6 @@ At runtime, `query_lore(query, n_results=4)` returns the top chunks for the GM p
 - **`apply_state_updates`** — merges GM `state_updates` into live state (HP, inventory, quests, flags).
 
 ---
-
-## Live Deployment
-
-This project is deployed and playable at:
-
-### [▶ Play it — RPG.com](https://RPG.com)
-
-> **Note:** If you only want to **play the game**, you do not need to clone the repo or configure Azure keys. Click the link above, create your character, and start typing actions in the chat.
-
-For developers who want to run or extend the codebase, see below.
-
----
-
 ## Running Locally
 
 ### Prerequisites
@@ -430,39 +412,6 @@ Open [http://localhost:5173](http://localhost:5173). The Vite dev proxy forwards
 | `LORE_DIR` | No | Lore markdown source |
 
 ---
-
-## Project Structure
-
-```
-rpg-multiagent/
-├── backend/
-│   ├── main.py                 # FastAPI routes
-│   ├── agents/
-│   │   ├── game_master.py      # GM orchestrator
-│   │   ├── base_agent.py       # Azure client + retry
-│   │   ├── warrior.py, mage.py, rogue.py, healer.py, rival.py
-│   ├── engine/
-│   │   ├── dice.py, rules.py   # Mechanics
-│   │   ├── lore_retriever.py   # ChromaDB RAG
-│   │   └── state_manager.py    # Campaign JSON
-│   └── data/lore/              # World knowledge (markdown)
-├── frontend/
-│   └── src/
-│       ├── hooks/useGameSession.ts
-│       └── components/         # Chat, party, dice, agent trace
-└── README1.md
-```
-
----
-
-## Extending the Project
-
-- **New character agent:** Add `agents/new_agent.py`, register in `AGENT_MAP`, add lore in `characters.md`, re-index ChromaDB.
-- **New lore:** Add markdown under `backend/data/lore/`, delete `backend/data/chroma` and restart (or `--reindex`).
-- **New rules:** Update `engine/rules.py` and `homebrew_rules.md`.
-
----
-
 ## License
 
 MIT
