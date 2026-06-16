@@ -2,11 +2,31 @@
 
 ## Overview
 
-**The Shattered Moon of Eldervale** is a turn-based, multi-agent fantasy role-playing game where a human player types natural-language actions and a **Game Master (GM) Agent** orchestrates the adventure. Five character agents—Warrior, Mage, Rogue, Healer, and Rival—respond in-character with persistent stats, backstories, and interpersonal dynamics. World lore is grounded in a local **ChromaDB** knowledge base queried at runtime, while all narrative intelligence runs on **Azure AI Foundry** via the `azure-ai-inference` SDK and **gpt-4o**.
+**The Shattered Moon of Eldervale** is a turn-based, multi-agent fantasy role-playing game where you type natural-language actions and a **Game Master (GM) Agent** orchestrates the story. Five AI character agents—Warrior, Mage, Rogue, Healer, and Rival—respond in-character with persistent stats, backstories, and party dynamics.
 
-The project combines a **FastAPI** backend, **React + Vite + TypeScript** frontend with a dark-fantasy chat UI, JSON file persistence, and a pure-Python dice/rules engine.
+You are not chatting with a single bot. Each turn, the GM classifies your action, pulls relevant world lore from a **ChromaDB** knowledge base, activates the right companions, runs dice checks through a pure-Python rules engine, and composes a unified narrative scene with choices for what to do next.
 
-## Architecture Diagram
+The stack is a **FastAPI** backend, a **React + Vite + TypeScript** dark-fantasy chat UI, JSON file persistence for campaign state, and **Azure AI Foundry** (`gpt-4o` via `azure-ai-inference`) for all narrative intelligence.
+
+```bash
+Want to play the game?
+Open the link above in your browser, enter your adventurer name, choose a class (Warrior, Mage, Rogue, or Healer), and begin at the Moonlit Gate.
+```
+---
+
+### What makes it different
+
+| Feature | Description |
+|---------|-------------|
+| Multi-agent orchestration | GM delegates to specialized character agents per turn |
+| Grounded lore | ChromaDB RAG over markdown world files at runtime |
+| Fair mechanics | Deterministic dice/rules engine separate from LLM narration |
+| Persistent campaigns | Session state saved to JSON; resume across visits |
+| Irreversible choices | Opening the Moonlit Gate, killing NPCs, etc. require confirmation |
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -25,312 +45,423 @@ flowchart LR
     GM --> Azure
 ```
 
+### Turn flow (high level)
+
+```mermaid
+sequenceDiagram
+    participant P as Player
+    participant UI as React UI
+    participant API as FastAPI
+    participant GM as Game Master
+    participant Lore as ChromaDB
+    participant Agents as Character Agents
+    participant Rules as Rules Engine
+    participant Azure as Azure gpt-4o
+
+    P->>UI: Type action or pick choice
+    UI->>API: POST /api/action
+    API->>GM: process_turn(action)
+    GM->>GM: Classify action type
+    GM->>Lore: query_lore(action + location)
+    GM->>GM: Select 0–3 agents
+    loop Each activated agent
+        GM->>Agents: respond(scene, action)
+        Agents->>Azure: complete_with_retry()
+        Azure-->>Agents: In-character reply
+    end
+    GM->>Rules: skill_check / attack_roll (if needed)
+    GM->>Azure: Compose scene JSON
+    Azure-->>GM: scene, choices, state_updates
+    GM->>API: Apply state, save session
+    API-->>UI: GMResponse + state
+    UI-->>P: Narrative, dice, choices
+```
+
+---
+
 ## Multi-Agent Design
 
-| Agent | Role | Personality | Modules accessed | Azure model used |
-|-------|------|-------------|------------------|------------------|
-| Game Master | Orchestrator, narrator, rules arbiter | Dark, mysterious, fair | lore_retriever, rules, state_manager, all agents | gpt-4o |
-| Warrior (Bran Ironvale) | Combat, protection | Brave, blunt, loyal | base_agent | gpt-4o |
-| Mage (Lyra Vey) | Arcana, lore interpretation | Analytical, arrogant | base_agent | gpt-4o |
-| Rogue (Sable Dusk) | Scouting, secrets | Witty, skeptical | base_agent | gpt-4o |
-| Healer (Aldric Thorn) | Healing, morality | Compassionate, principled | base_agent | gpt-4o |
-| Rival (Kael Thorn) | Dramatic tension, deals | Charismatic, threatening | base_agent | gpt-4o |
+The GM is the **orchestrator**. Character agents are **specialists** invoked when the action context calls for them. All agents share the same Azure model (`gpt-4o`) but use distinct system prompts, personalities, and backstories.
 
-## Prerequisites
+| Agent | Character | Role | Personality | When activated |
+|-------|-----------|------|-------------|----------------|
+| **Game Master** | Narrator | Orchestrator, rules arbiter, scene composer | Dark, mysterious, fair | Every turn |
+| **Warrior** | Bran Ironvale | Combat, protection, danger calls | Brave, blunt, loyal | Combat, exploration |
+| **Mage** | Lyra Vey | Arcana, lore interpretation | Analytical, arrogant | Investigation, magic keywords |
+| **Rogue** | Sable Dusk | Scouting, secrets, wit | Witty, skeptical | Exploration, social, investigation |
+| **Healer** | Aldric Thorn | Healing, morality, diplomacy | Compassionate, principled | Combat, social, heal keywords |
+| **Rival** | Kael Thorn | Dramatic tension, deals | Charismatic, threatening | Kael/rival/thorn keywords |
+
+### Agent selection logic
+
+The GM classifies each player action into one of: `combat`, `social`, `investigation`, `rest`, `inventory`, or `exploration`. Base agent picks follow the action type; keyword overrides can add Mage, Healer, or Rival. At most **3 agents** activate per turn.
+
+| Action type | Default agents |
+|-------------|----------------|
+| Combat | Warrior, Healer |
+| Social | Healer, Rogue |
+| Investigation | Mage, Rogue |
+| Exploration | Rogue, Warrior |
+| Other | Warrior |
+
+**Keyword overrides:** `magic`, `rune`, `arcane` → Mage; `heal`, `wound` → Healer; `kael`, `rival`, `thorn` → Rival.
+
+### Modules each layer uses
+
+| Layer | Modules |
+|-------|---------|
+| Game Master | `lore_retriever`, `rules`, `state_manager`, all character agents, `base_agent.complete_with_retry` |
+| Character agents | `base_agent.complete_with_retry` only |
+| Rules engine | `dice`, `rules` (pure Python, no LLM) |
+| Lore | ChromaDB + `sentence-transformers` (`all-MiniLM-L6-v2`) |
+
+---
+
+## Tech Stack
+
+### Backend
+
+| Technology | Purpose |
+|------------|---------|
+| **Python 3.11+** | Runtime |
+| **FastAPI** | REST API (`/api/new-game`, `/api/action`, etc.) |
+| **Uvicorn** | ASGI server |
+| **Azure AI Inference SDK** | Chat completions against Foundry `gpt-4o` |
+| **ChromaDB** | Vector store for lore RAG |
+| **sentence-transformers** | Local embeddings (`all-MiniLM-L6-v2`) |
+| **Pydantic** | Request/response validation |
+| **python-dotenv** | Environment configuration |
+
+### Frontend
+
+| Technology | Purpose |
+|------------|---------|
+| **React 18** | UI framework |
+| **TypeScript** | Type-safe components and hooks |
+| **Vite** | Dev server and production build |
+| **Tailwind CSS** | Dark-fantasy styling |
+| **react-markdown** | Render GM narrative (Markdown) |
+
+### AI & data
+
+| Component | Details |
+|-----------|---------|
+| **LLM** | `gpt-4o` via Azure AI Foundry |
+| **Lore source** | Markdown files in `backend/data/lore/` |
+| **State persistence** | JSON files in `backend/data/state/` |
+| **Embeddings** | Local; no external embedding API |
+
+### API surface
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/new-game` | POST | Create campaign + opening scene |
+| `/api/action` | POST | Process player action through GM loop |
+| `/api/confirm` | POST | Confirm/cancel irreversible actions |
+| `/api/state/{session_id}` | GET | Full campaign state |
+| `/api/rest` | POST | Short or long rest |
+| `/api/lore/search` | GET | Debug lore retrieval |
+| `/health` | GET | Health check |
+
+---
+
+## Game Rules & How to Play
+
+### Getting started
+
+1. Open **[RPG.com](https://RPG.com)** (or run locally — see [Running locally](#running-locally)).
+2. Enter your **adventurer name**.
+3. Choose a **class**: Warrior, Mage, Rogue, or Healer (this is your player character; NPC companions join automatically).
+4. Read the opening scene at **The Moonlit Gate**.
+5. Type what you want to do in plain English, or tap a numbered **choice chip**.
+6. Watch **dice rolls**, **party HP**, and the **agent trace** panel to see which AI agents spoke this turn.
+7. Use **Short Rest** / **Long Rest** from the header when you need to recover HP.
+
+### Core abilities
+
+Six ability scores, range **1–20**:
+
+| Ability | Typical use |
+|---------|-------------|
+| **STR** | Melee attacks, Athletics |
+| **DEX** | Stealth, finesse weapons, initiative |
+| **INT** | Arcana, History |
+| **WIS** | Perception, Medicine, Insight |
+| **CON** | HP, short-rest healing |
+| **CHA** | Persuasion, Deception, Intimidation |
+
+**Modifier** = `floor((score - 10) / 2)` — e.g. STR 18 → +4.
+
+### Checks & outcomes
+
+Roll **d20 + modifier** vs a **Difficulty Class (DC)**:
+
+| Result | Condition |
+|--------|-----------|
+| **Critical success** | Total ≥ DC + 5 |
+| **Success** | Total ≥ DC |
+| **Partial success** | Total ≥ DC − 4 (usually costs something) |
+| **Failure** | Below partial threshold |
+
+### Skills (ability mapping)
+
+| Skill | Ability |
+|-------|---------|
+| Stealth | DEX |
+| Arcana, History | INT |
+| Medicine, Perception, Insight | WIS |
+| Persuasion, Deception, Intimidation | CHA |
+| Athletics | STR |
+
+### Combat
+
+1. **Initiative:** d20 + DEX modifier (highest acts first).
+2. **Attack:** d20 + STR or DEX (weapon-dependent) vs target **AC**.
+3. **Damage:** weapon die + modifier (e.g. longsword = d8 + STR).
+4. **Critical hit:** beat AC by 5+ → double damage dice.
+5. **0 HP** = incapacitated. Combat ends when all enemies or all party members are down.
+
+Example weapons: longsword (d8+STR), dagger (d4+DEX), shortbow (d6+DEX), rapier (d8+DEX).
+
+### Inventory
+
+- **8 slots** maximum per character.
+- **Light** = 1 slot, **Medium** = 2, **Heavy** = 3.
+- Cannot pick up items if slots are full.
+
+### Resting
+
+| Rest type | Effect |
+|-----------|--------|
+| **Short rest** | Once between long rests: recover **d6 + CON modifier** HP per party member |
+| **Long rest** | Full HP restore; resets short rest; requires a safe location |
+
+Conditions (poisoned, frightened) persist through short rest unless cured.
+
+### Irreversible actions
+
+The GM pauses for confirmation before actions like:
+
+- Opening the **Moonlit Gate**
+- **Killing** a named NPC
+- Using a **cursed artifact**
+- **Destroying** a relic
+- **Betrayal**
+
+You will see *"This cannot be undone. Do you wish to proceed?"* — answer **Yes** or **No**.
+
+### Tips for good play
+
+- Be specific: *"Examine the runes on the gate"* beats *"look around"*.
+- Talk to companions by name — that can activate the right agent.
+- Check the **Quest Journal** and **Party Panel** for HP, inventory, and active quests.
+- Partial successes still move the story forward — expect complications.
+
+---
+
+## How Agents Work (In Detail)
+
+### 1. Shared Azure client (`base_agent.py`)
+
+All agents call **`complete_with_retry()`**, which:
+
+1. Resolves the Azure AI Foundry **deployment endpoint** (auto-discovers chat deployments or uses `AZURE_AI_INFERENCE_ENDPOINT`).
+2. Builds a message list: **system prompt** + last **10** conversation turns + **user prompt**.
+3. Calls `ChatCompletionsClient.complete()` with `gpt-4o`, `max_tokens`, and `temperature`.
+4. Retries with exponential backoff on rate limits (401/404 fail fast with clear errors).
+
+```python
+# Simplified call pattern (every agent uses this)
+complete_with_retry(
+    system_prompt=AGENT_SYSTEM_PROMPT,
+    user_prompt=scene + player_action + gm_instruction,
+    conversation_history=state["conversation_history"],
+    max_tokens=256,   # 1500 for GM
+    temperature=0.8,
+)
+```
+
+### 2. Character agent pattern
+
+Each character agent (e.g. `WarriorAgent`) is a small class:
+
+- **`__init__(state)`** — holds campaign state reference and a fixed **in-character system prompt** (backstory, voice, tactical role).
+- **`respond(scene_context, player_action, gm_instruction, conversation_history)`** — formats a user prompt and returns the LLM reply string.
+
+The GM never lets character agents write final scene JSON. They only produce **quoted dialogue / reactions** that the GM weaves into the narrative.
+
+### 3. Game Master orchestration (`game_master.py`)
+
+**`GameMaster.process_turn(player_action, confirmed=False)`** runs the full loop:
+
+| Step | What happens |
+|------|----------------|
+| 1. Confirmation gate | If action matches irreversible keywords and not confirmed → return confirmation prompt |
+| 2. Classify | `_classify_action()` → combat / social / investigation / etc. |
+| 3. Lore RAG | `_build_lore_context()` → ChromaDB query on action + location + quest |
+| 4. Select agents | `_select_agents()` → up to 3 agent keys |
+| 5. Agent calls | For each key: instantiate from `AGENT_MAP`, call `.respond()` |
+| 6. Dice | `_needs_roll()` → `rules.skill_check()` or `rules.attack_roll()` when keywords/action type match |
+| 7. GM synthesis | JSON payload sent to Azure with lore, agent replies, rolls, and state snapshot |
+| 8. Parse & persist | Parse GM JSON, `apply_state_updates()`, increment turn, append conversation history |
+
+**`AGENT_MAP`:**
+
+```python
+AGENT_MAP = {
+    "warrior": WarriorAgent,
+    "mage": MageAgent,
+    "rogue": RogueAgent,
+    "healer": HealerAgent,
+    "rival": RivalAgent,
+}
+```
+
+### 4. GM output schema
+
+The GM must return JSON like:
+
+```json
+{
+  "scene": "Markdown narrative...",
+  "choices": ["1. ...", "2. ...", "3. ..."],
+  "rolls": [],
+  "state_updates": {
+    "location": null,
+    "world_flags": {},
+    "party_hp_changes": {},
+    "inventory_changes": {},
+    "quest_updates": [],
+    "faction_reputation": {},
+    "rival_trust_level": null
+  },
+  "agents_activated": ["warrior", "mage"],
+  "lore_chunks_used": ["locations::moonlit_gate::0"],
+  "requires_confirmation": false,
+  "confirmation_prompt": null
+}
+```
+
+### 5. How the frontend calls agents (indirectly)
+
+The React app never talks to agents directly. **`useGameSession`** hook:
+
+| User action | HTTP call | Backend |
+|-------------|-----------|---------|
+| Start game | `POST /api/new-game` | `new_campaign()` → `GameMaster.opening_scene()` |
+| Send message | `POST /api/action` | `GameMaster.process_turn(action)` |
+| Confirm danger | `POST /api/confirm` | `process_turn(pending_action, confirmed=True)` |
+| Resume | `GET /api/state/{id}` | `load_session()` from localStorage |
+| Rest | `POST /api/rest` | `rules.short_rest()` or full HP restore |
+
+Session ID is stored in **`localStorage`** (`eldervale_session_id`) so refresh resumes your campaign.
+
+### 6. Lore retrieval (`lore_retriever.py`)
+
+On backend startup:
+
+1. Parse all `backend/data/lore/*.md` at `##` headings into chunks.
+2. Embed with `all-MiniLM-L6-v2`.
+3. Store in ChromaDB collection `eldervale_lore`.
+
+At runtime, `query_lore(query, n_results=4)` returns the top chunks for the GM prompt — keeping narration consistent with world files (locations, factions, quests, bestiary, etc.).
+
+### 7. State management (`state_manager.py`)
+
+- **`new_campaign(player_name, character_class)`** — UUID session, party from templates, rival NPC, starting location, empty conversation history.
+- **`save_session` / `load_session`** — one JSON file per `session_id`.
+- **`apply_state_updates`** — merges GM `state_updates` into live state (HP, inventory, quests, flags).
+
+---
+
+## Live Deployment
+
+This project is deployed and playable at:
+
+### [▶ Play it — RPG.com](https://RPG.com)
+
+> **Note:** If you only want to **play the game**, you do not need to clone the repo or configure Azure keys. Click the link above, create your character, and start typing actions in the chat.
+
+For developers who want to run or extend the codebase, see below.
+
+---
+
+## Running Locally
+
+### Prerequisites
 
 - Python 3.11+
 - Node.js 18+
-- npm 9+
-- An Azure AI Foundry project with gpt-4o deployed
+- Azure AI Foundry project with **gpt-4o** deployed
 
-## Azure AI Foundry Setup
-
-1. Go to [https://ai.azure.com](https://ai.azure.com)
-2. Open your project (`nandu-3153-resource`)
-3. Copy the **Project endpoint** URL
-4. Copy the **API key** from the dashboard
-5. Verify **gpt-4o** is deployed under "Models + endpoints"
-6. Paste both into your `.env` file (see below)
-
-## API Keys and Credentials Required
-
-| Variable | Where to find it | Required? |
-|----------|------------------|-----------|
-| `AZURE_AI_FOUNDRY_API_KEY` | Azure AI Foundry dashboard → API key | **Required** |
-| `AZURE_AI_FOUNDRY_ENDPOINT` | Azure AI Foundry dashboard → Project endpoint | **Required** |
-| `AZURE_AI_MODEL` | Your deployed model name (default: `gpt-4o`) | Optional |
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint (reference only) | Optional |
-
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone <repo-url>
-cd rpg-multiagent
-```
-
-### 2. Backend setup
+### Backend
 
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+# Windows: venv\Scripts\activate
+# macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 cp ../.env.example ../.env
-# Edit .env — add AZURE_AI_FOUNDRY_API_KEY and your project endpoint
-```
-
-### 3. Frontend setup
-
-```bash
-cd ../frontend
-npm install
-```
-
-## Running the Project
-
-### Start the backend
-
-```bash
-cd backend
-source venv/bin/activate        # Windows: venv\Scripts\activate
+# Add AZURE_AI_FOUNDRY_API_KEY and AZURE_AI_FOUNDRY_ENDPOINT
 uvicorn main:app --reload --port 8000
 ```
 
-On first run, the lore knowledge base is automatically indexed (~30 seconds).
-
-To force re-indexing:
-
-```bash
-uvicorn main:app --reload --port 8000 -- --reindex
-```
-
-### Start the frontend
+### Frontend
 
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+Open [http://localhost:5173](http://localhost:5173). The Vite dev proxy forwards `/api` to port 8000.
 
-## API Reference
+### Environment variables
 
-### POST /api/new-game
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AZURE_AI_FOUNDRY_API_KEY` | Yes | Foundry project API key |
+| `AZURE_AI_FOUNDRY_ENDPOINT` | Yes | Foundry project endpoint URL |
+| `AZURE_AI_MODEL` | No | Default `gpt-4o` |
+| `AZURE_AI_DEPLOYMENT_NAME` | No | Override deployment name |
+| `CHROMA_PERSIST_DIR` | No | ChromaDB path |
+| `STATE_DIR` | No | Campaign JSON directory |
+| `LORE_DIR` | No | Lore markdown source |
 
-Creates a new campaign with an opening scene.
+---
 
-**Request:**
-```json
-{
-  "player_name": "Alden",
-  "character_class": "warrior"
-}
-```
-
-`character_class` must be one of: `warrior`, `mage`, `rogue`, `healer`.
-
-**Response:**
-```json
-{
-  "session_id": "uuid",
-  "scene": "Markdown narrative...",
-  "choices": ["1. ...", "2. ..."],
-  "state": { "...": "..." }
-}
-```
-
-**Example:**
-```bash
-curl -X POST http://localhost:8000/api/new-game \
-  -H "Content-Type: application/json" \
-  -d '{"player_name":"Alden","character_class":"warrior"}'
-```
-
-### POST /api/action
-
-Processes a player action through the GM orchestration loop.
-
-**Request:**
-```json
-{
-  "session_id": "uuid",
-  "action": "Examine the Moonlit Gate"
-}
-```
-
-**Response:** Full GM output JSON including `scene`, `choices`, `rolls`, `state_updates`, `agents_activated`, `lore_chunks_used`, `requires_confirmation`, and `state`.
-
-**Example:**
-```bash
-curl -X POST http://localhost:8000/api/action \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"<uuid>","action":"Scout the perimeter"}'
-```
-
-### POST /api/confirm
-
-Confirms or cancels a pending irreversible action.
-
-**Request:**
-```json
-{
-  "session_id": "uuid",
-  "confirmed": true
-}
-```
-
-**Example:**
-```bash
-curl -X POST http://localhost:8000/api/confirm \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"<uuid>","confirmed":true}'
-```
-
-### GET /api/state/{session_id}
-
-Returns the full current campaign state.
-
-**Example:**
-```bash
-curl http://localhost:8000/api/state/<uuid>
-```
-
-### GET /api/lore/search?q={query}
-
-Queries the ChromaDB lore retriever directly (debug endpoint).
-
-**Example:**
-```bash
-curl "http://localhost:8000/api/lore/search?q=Starwell+Relic"
-```
-
-### POST /api/rest
-
-Triggers a short or long rest for the party.
-
-**Request:**
-```json
-{
-  "session_id": "uuid",
-  "rest_type": "short"
-}
-```
-
-**Example:**
-```bash
-curl -X POST http://localhost:8000/api/rest \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"<uuid>","rest_type":"long"}'
-```
-
-## Game Rules Summary
-
-- **Ability scores:** STR, DEX, INT, WIS, CON, CHA (1–20). Modifier = `floor((score - 10) / 2)`.
-- **Checks:** d20 + modifier vs DC. Critical success (DC+5), success (DC), partial success (DC−4), failure below.
-- **Combat:** Initiative (d20+DEX), attack (d20+STR/DEX vs AC), weapon damage (e.g. longsword d8+STR). 0 HP = incapacitated.
-- **Inventory:** 8 slots max. Light=1, Medium=2, Heavy=3 slots per item.
-- **Rests:** Short rest = d6+CON HP once between long rests. Long rest = full HP in safe location.
-- **Skills:** Stealth→DEX, Arcana→INT, Medicine→WIS, Persuasion→CHA, Athletics→STR, Perception→WIS, Deception→CHA, History→INT, Insight→WIS, Intimidation→CHA.
-
-## Directory Structure
+## Project Structure
 
 ```
 rpg-multiagent/
 ├── backend/
-│   ├── main.py                 # FastAPI entry point
-│   ├── agents/                 # GM + character agents
-│   ├── engine/                 # dice, rules, state, lore
-│   ├── data/
-│   │   ├── lore/               # Markdown world knowledge
-│   │   ├── state/              # Session JSON files
-│   │   └── chroma/             # ChromaDB persistence (auto-created)
-│   ├── utils/
-│   └── requirements.txt
+│   ├── main.py                 # FastAPI routes
+│   ├── agents/
+│   │   ├── game_master.py      # GM orchestrator
+│   │   ├── base_agent.py       # Azure client + retry
+│   │   ├── warrior.py, mage.py, rogue.py, healer.py, rival.py
+│   ├── engine/
+│   │   ├── dice.py, rules.py   # Mechanics
+│   │   ├── lore_retriever.py   # ChromaDB RAG
+│   │   └── state_manager.py    # Campaign JSON
+│   └── data/lore/              # World knowledge (markdown)
 ├── frontend/
-│   ├── src/
-│   │   ├── components/         # UI components
-│   │   ├── hooks/              # useGameSession
-│   │   └── types/
-│   └── package.json
-├── .env.example
-├── DECISIONS.md
-└── README.md
+│   └── src/
+│       ├── hooks/useGameSession.ts
+│       └── components/         # Chat, party, dice, agent trace
+└── README1.md
 ```
 
-## Environment Variables
-
-| Variable | Default | Description | Required |
-|----------|---------|-------------|----------|
-| `AZURE_AI_FOUNDRY_API_KEY` | — | Foundry project API key | Yes |
-| `AZURE_AI_FOUNDRY_ENDPOINT` | — | Foundry project endpoint URL | Yes |
-| `AZURE_AI_MODEL` | `gpt-4o` | Deployed model name | No |
-| `AZURE_OPENAI_ENDPOINT` | — | Reference OpenAI endpoint | No |
-| `BACKEND_PORT` | `8000` | Backend port | No |
-| `FRONTEND_PORT` | `5173` | Frontend dev port | No |
-| `CHROMA_PERSIST_DIR` | `./backend/data/chroma` | ChromaDB storage | No |
-| `STATE_DIR` | `./backend/data/state` | Campaign state files | No |
-| `LORE_DIR` | `./backend/data/lore` | Lore markdown source | No |
-| `LOG_LEVEL` | `INFO` | Logging verbosity | No |
-
-## Lore Knowledge Base
-
-On first startup, all `.md` files in `backend/data/lore/` are parsed at `##` headings, embedded with `all-MiniLM-L6-v2`, and stored in ChromaDB collection `eldervale_lore`.
-
-- **Re-index:** Delete `backend/data/chroma` and restart, or run with `--reindex`.
-- **Add lore:** Create a new markdown entry following the template in any lore file, then re-index.
-
-## Agent System
-
-1. Player submits an action via `/api/action`.
-2. GM classifies the action (exploration, combat, social, etc.).
-3. GM queries ChromaDB for relevant lore.
-4. GM selects 0–3 character agents to activate based on context.
-5. Each agent calls Azure AI Inference with its in-character system prompt.
-6. Rules engine executes dice rolls when appropriate.
-7. GM composes a unified JSON scene response and applies state updates.
-8. Conversation history is appended and persisted to JSON.
-
-## Troubleshooting
-
-### "AZURE_AI_FOUNDRY_API_KEY not set"
-Set it in your `.env` file. Copy the key from the Azure AI Foundry project dashboard under "API key".
-
-### "401 Unauthorized from Azure"
-Your API key is wrong or expired. Re-copy it from the dashboard.
-
-### "404 Model not found"
-Your `AZURE_AI_MODEL` value doesn't match a deployed model. Go to Azure AI Foundry → Models + endpoints and check the deployment name.
-
-### "ChromaDB collection not found"
-Delete `./backend/data/chroma` and restart the backend — it will re-index automatically.
-
-### "Port 8000 already in use"
-
-**Linux/macOS:**
-```bash
-lsof -i :8000 | grep LISTEN
-kill -9 <PID>
-```
-
-**Windows (PowerShell):**
-```powershell
-netstat -ano | findstr :8000
-taskkill /PID <PID> /F
-```
-
-### Frontend cannot reach backend
-Check that the Vite proxy in `vite.config.ts` forwards `/api` to `http://localhost:8000`.
-
-### Slow lore indexing on first run
-`sentence-transformers` downloads the `all-MiniLM-L6-v2` model (~90MB) on first use. This is a one-time download.
+---
 
 ## Extending the Project
 
-- **New character agent:** Add `agents/new_agent.py`, register in `game_master.py` `AGENT_MAP`, add lore entry in `characters.md`, re-index.
-- **New lore:** Add markdown entries under `backend/data/lore/`, re-index ChromaDB.
-- **New rules:** Update `engine/rules.py` and `homebrew_rules.md`, re-index.
+- **New character agent:** Add `agents/new_agent.py`, register in `AGENT_MAP`, add lore in `characters.md`, re-index ChromaDB.
+- **New lore:** Add markdown under `backend/data/lore/`, delete `backend/data/chroma` and restart (or `--reindex`).
+- **New rules:** Update `engine/rules.py` and `homebrew_rules.md`.
+
+---
 
 ## License
 
