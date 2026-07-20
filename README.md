@@ -245,15 +245,6 @@ The GM pauses for confirmation before actions like:
 
 You will see *"This cannot be undone. Do you wish to proceed?"* — answer **Yes** or **No**.
 
-### Tips for good play
-
-- Be specific: *"Examine the runes on the gate"* beats *"look around"*.
-- Talk to companions by name — that can activate the right agent.
-- Check the **Quest Journal** and **Party Panel** for HP, inventory, and active quests.
-- Partial successes still move the story forward — expect complications.
-
----
-
 ## How Agents Work (In Detail)
 
 ### 1. Shared Azure client (`base_agent.py`)
@@ -366,51 +357,6 @@ At runtime, `query_lore(query, n_results=4)` returns the top chunks for the GM p
 - **`new_campaign(player_name, character_class)`** — UUID session, party from templates, rival NPC, starting location, empty conversation history.
 - **`save_session` / `load_session`** — one JSON file per `session_id`.
 - **`apply_state_updates`** — merges GM `state_updates` into live state (HP, inventory, quests, flags).
-
----
-## Running Locally
-
-### Prerequisites
-
-- Python 3.11+
-- Node.js 18+
-- Azure AI Foundry project with **gpt-4o** deployed
-
-### Backend
-
-```bash
-cd backend
-python -m venv venv
-# Windows: venv\Scripts\activate
-# macOS/Linux: source venv/bin/activate
-pip install -r requirements.txt
-cp ../.env.example ../.env
-# Add AZURE_AI_FOUNDRY_API_KEY and AZURE_AI_FOUNDRY_ENDPOINT
-uvicorn main:app --reload --port 8000
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open [http://localhost:5173](http://localhost:5173). The Vite dev proxy forwards `/api` to port 8000.
-
-### Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `AZURE_AI_FOUNDRY_API_KEY` | Yes | Foundry project API key |
-| `AZURE_AI_FOUNDRY_ENDPOINT` | Yes | Foundry project endpoint URL |
-| `AZURE_AI_MODEL` | No | Default `gpt-4o` |
-| `AZURE_AI_DEPLOYMENT_NAME` | No | Override deployment name |
-| `CHROMA_PERSIST_DIR` | No | ChromaDB path |
-| `STATE_DIR` | No | Campaign JSON directory |
-| `LORE_DIR` | No | Lore markdown source |
-
 ---
 ## License
 
